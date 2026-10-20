@@ -4,16 +4,24 @@ import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 import { createNavigation } from './viewer-navigation.js';
 import { viewerMarkup, bindViewerControls } from './viewer-controls.js';
 
-export async function mountViewer(element, url, { upAxis = 'Z', initialView, onStatus = () => {}, signal } = {}) {
+export async function mountViewer(element, url, { upAxis = 'Z', initialView, format, onStatus = () => {}, signal } = {}) {
   let renderer, controls, splat, spark, observer, interaction, disposed = false;
   const abort = new AbortController();
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(55, 1, .01, 1000);
+  const extraPasses = new Set();
   function dispose() {
     if (disposed) return;
-    disposed = true; abort.abort(); signal?.removeEventListener('abort', dispose); observer?.disconnect(); interaction?.dispose();
-    renderer?.setAnimationLoop(null); controls?.dispose(); splat?.dispose(); spark?.dispose();
-    renderer?.dispose(); renderer?.forceContextLoss(); renderer?.domElement.remove();
+    disposed = true; abort.abort(); signal?.removeEventListener('abort', dispose); observer?.disconnect(); interaction?.dispose(); extraPasses.clear();
+    renderer?.setAnimationLoop(null); controls?.dispose(); renderer?.domElement.remove();
+    // Spark 2.2 still awaits GPU readback / worker sorting after a frame returns.
+    // Stop scheduling work and retain the context until that sort finishes.
+    if (spark) { spark.autoUpdate = false; spark.sortDirty = false; clearTimeout(spark.sortTimeoutId); }
+    const release = () => {
+      if (spark?.sorting) { setTimeout(release, 10); return; }
+      splat?.dispose(); spark?.dispose(); renderer?.dispose(); renderer?.forceContextLoss();
+    };
+    release();
   }
   signal?.addEventListener('abort', dispose, { once: true });
   try {
@@ -42,7 +50,7 @@ export async function mountViewer(element, url, { upAxis = 'Z', initialView, onS
     if (!response.ok) throw new Error(`模型读取失败（${response.status}）。`);
     const bytes = await response.arrayBuffer();
     if (disposed) throw new DOMException('预览已取消', 'AbortError');
-    splat = new SplatMesh({ fileBytes: bytes, fileName: url.includes('.ply') ? 'room.ply' : 'room.spz' });
+    splat = new SplatMesh({ fileBytes: bytes, fileName: `room.${format || (url.includes('.ply') ? 'ply' : 'spz')}` });
     await splat.initialized;
     if (disposed) { splat.dispose(); throw new DOMException('预览已取消', 'AbortError'); }
     if (upAxis === 'Z') splat.rotation.x = -Math.PI / 2;
@@ -63,8 +71,16 @@ export async function mountViewer(element, url, { upAxis = 'Z', initialView, onS
     renderer.setAnimationLoop(time => {
       const seconds = previousTime === undefined ? 0 : Math.min((time - previousTime) / 1000, .08);
       previousTime = time; interaction.tick(seconds); controls.update(); renderer.render(scene, camera);
+      for (const pass of extraPasses) pass(renderer);
     });
     onStatus('模型已加载 · 可使用移动键、鼠标或触屏查看');
-    return { dispose, reset: interaction.reset };
+    // Local furniture uses this same Y-up scene and the existing navigation controls.
+    async function whenSettled() {
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      while (!disposed && spark.sorting) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!disposed) await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    return { dispose, reset: interaction.reset, scene, camera, controls, splat, bounds: box.clone(), canvas: renderer.domElement, whenSettled,
+      addRenderPass(pass) { extraPasses.add(pass); return () => extraPasses.delete(pass); } };
   } catch (error) { dispose(); throw error; }
 }

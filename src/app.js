@@ -34,7 +34,17 @@ const state = { user: null, csrf: '', config: {}, view: 'home', drafts: [], draf
 let viewerAbort = null;
 function closeViewer() {
   viewerAbort?.abort(); viewerAbort = null;
+  state.furnishing?.dispose(); state.furnishing = null;
   state.viewer?.dispose(); state.viewer = null;
+}
+function furnishingHash() { return /^#\/furnishing\/([a-zA-Z0-9-]+)$/.exec(location.hash)?.[1] || null; }
+function canLeaveFurnishing() {
+  if (state.furnishing?.busy) throw new Error('布局正在保存，请稍候再离开。');
+  return !state.furnishing?.hasUnsavedChanges || confirm('家具布局尚未保存，离开会放弃当前调整。继续离开？');
+}
+async function initialView() {
+  state.furnishingRoomId = furnishingHash();
+  return navigate(state.furnishingRoomId ? 'furnishing' : 'home');
 }
 const documentLabels = { front: '身份证人像面', back: '身份证国徽面', property: '房产证' };
 const isVerified = () => state.user?.verification?.status === 'passed';
@@ -104,7 +114,7 @@ function stepIndex() { return ({ capture: 0, review: 1, result: 2 })[state.view]
 function shell(content) {
   $('#toast').hidden = true;
   const step = stepIndex();
-  $('#app').innerHTML = `<div class="app-shell"><aside class="sidebar">${brand()}<div class="nav-caption">工作空间</div><nav aria-label="主导航">${button('home', '我的采集', 'folder', state.view === 'home' ? 'nav active' : 'nav')}${button('sample', '重建样例', 'cube', state.view === 'sample' ? 'nav active' : 'nav')}${button('account', '用户中心', 'shield', state.view === 'account' ? 'nav active' : 'nav')}</nav><div class="sidebar-bottom"><span class="connection-dot"></span><span>本机工作空间<small>素材保存在当前服务</small></span></div></aside><div class="app-main"><header class="topbar"><div class="breadcrumb">房东端 <span>/</span> ${h(state.view === 'home' ? '我的采集' : state.view === 'sample' ? '重建样例' : state.view === 'account' ? '用户中心' : stepLabels[step])}</div><div class="account"><button class="account-link" data-action="account" aria-label="用户中心，查看核验状态"><span class="avatar">房</span><span class="account-name">${h(state.user.username)}</span>${verificationBadge()}</button>${button('logout', '<span class="logout-text">退出</span>', 'logout', 'icon-button', 'aria-label="退出登录"')}</div></header><main class="content">${step >= 0 ? `<div class="stepper" aria-label="采集步骤">${stepLabels.map((label, i) => `<div class="step ${i === step ? 'current' : i < step ? 'done' : ''}" ${i === step ? 'aria-current="step"' : ''}><span>${i < step ? icon('check') : `0${i + 1}`}</span><strong>${label}</strong></div>`).join('')}</div>` : ''}${content}</main><footer class="app-footer">租房系统 · 房东端 <span>本地 MVP / v0.2</span></footer></div></div>`;
+  $('#app').innerHTML = `<div class="app-shell"><aside class="sidebar">${brand()}<div class="nav-caption">工作空间</div><nav aria-label="主导航">${button('home', '我的采集', 'folder', state.view === 'home' ? 'nav active' : 'nav')}${button('sample', '重建样例', 'cube', state.view === 'sample' ? 'nav active' : 'nav')}${button('furnishing', '家具试摆', 'home', state.view === 'furnishing' ? 'nav active' : 'nav')}${button('account', '用户中心', 'shield', state.view === 'account' ? 'nav active' : 'nav')}</nav><div class="sidebar-bottom"><span class="connection-dot"></span><span>本机工作空间<small>素材保存在当前服务</small></span></div></aside><div class="app-main"><header class="topbar"><div class="breadcrumb">房东端 <span>/</span> ${h(state.view === 'home' ? '我的采集' : state.view === 'sample' ? '重建样例' : state.view === 'furnishing' ? '家具试摆' : state.view === 'account' ? '用户中心' : stepLabels[step])}</div><div class="account"><button class="account-link" data-action="account" aria-label="用户中心，查看核验状态"><span class="avatar">房</span><span class="account-name">${h(state.user.username)}</span>${verificationBadge()}</button>${button('logout', '<span class="logout-text">退出</span>', 'logout', 'icon-button', 'aria-label="退出登录"')}</div></header><main class="content">${step >= 0 ? `<div class="stepper" aria-label="采集步骤">${stepLabels.map((label, i) => `<div class="step ${i === step ? 'current' : i < step ? 'done' : ''}" ${i === step ? 'aria-current="step"' : ''}><span>${i < step ? icon('check') : `0${i + 1}`}</span><strong>${label}</strong></div>`).join('')}</div>` : ''}${content}</main><footer class="app-footer">租房系统 · 房东端 <span>本地 MVP / v0.2</span></footer></div></div>`;
 }
 function heading(kicker, title, subtitle, actions = '') { return `<div class="page-heading"><div><span class="eyebrow">${kicker}</span><h1>${title}</h1><p>${subtitle}</p></div>${actions ? `<div class="heading-actions">${actions}</div>` : ''}</div>`; }
 function draftStatus(d) { if (!d.media_count && !d.media?.length) return '待拍摄'; if (d.confirmed_revision === d.revision) return '已人工复核'; if (d.review_revision === d.revision) return '待人工复核'; return '采集草稿'; }
@@ -211,7 +221,7 @@ function renderReview() {
 }
 const jobLabels = { SUBMITTING: '正在上传与提交', RUNNING: '平台重建中', QUEUED: '排队中', PENDING: '等待处理', SUCCEEDED: '重建完成 · 待验收', UNKNOWN: '状态待核对', FAILED: '任务失败', CANCELLED: '已取消', ASSET_MISSING: '模型资产待处理' };
 function resultPreview(job) {
-  return `<section class="panel"><div class="section-heading"><h2>素材版本 ${job.revision} 三维预览${job.revision === state.draft.revision ? '' : '（补拍前）'}</h2><span class="badge blue">交互预览</span></div><div id="model-viewer" class="model-viewer"><div class="viewer-loading">正在准备三维预览…</div></div><p id="viewer-status" class="small muted" role="status">等待加载</p><div class="download-row">${job.result.spz ? `<a class="btn secondary" href="${h(job.result.spz)}" target="_blank" rel="noopener noreferrer">${icon('download')} 下载 SPZ</a>` : ''}${job.result.ply ? `<a class="btn secondary" href="${h(job.result.ply)}" target="_blank" rel="noopener noreferrer">${icon('download')} 下载 PLY</a>` : ''}<a class="text-button" href="https://studio.aholo3d.cn/viewer?projectId=${encodeURIComponent(job.world_id)}" target="_blank" rel="noopener noreferrer">在平台查看</a></div></section>`;
+  return `<section class="panel"><div class="section-heading"><h2>素材版本 ${job.revision} 三维预览${job.revision === state.draft.revision ? '' : '（补拍前）'}</h2><span class="badge blue">交互预览</span></div><div id="model-viewer" class="model-viewer"><div class="viewer-loading">正在准备三维预览…</div></div><p id="viewer-status" class="small muted" role="status">等待加载</p><div class="download-row">${button('furnishing', '送入本地试摆', 'home', 'primary', `data-room="job-${h(job.id)}"`)}${job.result.spz ? `<a class="btn secondary" href="${h(job.result.spz)}" target="_blank" rel="noopener noreferrer">${icon('download')} 下载 SPZ</a>` : ''}${job.result.ply ? `<a class="btn secondary" href="${h(job.result.ply)}" target="_blank" rel="noopener noreferrer">${icon('download')} 下载 PLY</a>` : ''}<a class="text-button" href="https://studio.aholo3d.cn/viewer?projectId=${encodeURIComponent(job.world_id)}" target="_blank" rel="noopener noreferrer">在平台查看</a></div></section>`;
 }
 function renderResult() {
   const d = state.draft;
@@ -236,9 +246,19 @@ function renderSample() {
   <div class="sample-picker" role="group" aria-label="选择预览样例">${samples.map(item => `<button type="button" data-action="select-sample" data-id="${h(item.id)}" aria-pressed="${item.id === selected.id}">${icon('cube')}<span><strong>${h(item.title)}</strong><small>${h(item.kind)} · ${item.available ? '可预览' : '本机未安装'}</small></span>${item.id === selected.id ? icon('check') : ''}</button>`).join('')}</div>
   <div class="notice warning">${icon('info')}<p>${h(selected.notice)}</p></div>
   <div class="sample-layout"><section class="panel"><div class="section-heading"><h2>${icon('cube')} ${h(selected.title)}</h2><div class="sample-panel-actions"><span class="badge blue">交互预览</span>${button('edit-sample', '编辑信息', 'edit', 'secondary small-btn', `data-id="${h(selected.id)}"`)}</div></div><div id="model-viewer" class="model-viewer large"><div class="viewer-loading">${modelUrl ? '正在准备三维模型…' : '本机未找到此样例模型文件，请参阅使用说明。'}</div></div><p id="viewer-status" class="small muted" role="status"></p>
-  <div class="download-row">${['spz', 'ply'].filter(format => selected.assets[format]).map(format => `<a href="${h(selected.assets[format])}?download=1" class="btn secondary">${icon('download')} 下载 ${format.toUpperCase()}</a>`).join('')}${selected.source ? `<a class="text-button" href="${h(selected.source)}" target="_blank" rel="noopener noreferrer">在平台查看 ${icon('arrow')}</a>` : ''}</div></section>
+  <div class="download-row">${modelUrl ? button('furnishing', '送入本地试摆', 'home', 'primary', `data-room="sample-${h(selected.id)}"`) : ''}${['spz', 'ply'].filter(format => selected.assets[format]).map(format => `<a href="${h(selected.assets[format])}?download=1" class="btn secondary">${icon('download')} 下载 ${format.toUpperCase()}</a>`).join('')}${selected.source ? `<a class="text-button" href="${h(selected.source)}" target="_blank" rel="noopener noreferrer">在平台查看 ${icon('arrow')}</a>` : ''}</div></section>
   <aside class="panel sample-details"><span class="eyebrow">${h(selected.kind)}记录</span><h2>${selected.isImported ? '导入案例详情' : '从样例了解预览效果'}</h2><p>${h(selected.description)}</p>${selected.note ? `<div class="sample-case-note"><h3>案例备注</h3><p>${h(selected.note)}</p></div>` : ''}<dl class="summary-list">${selected.facts.map(([label, value]) => `<div><dt>${h(label)}</dt><dd>${h(value)}</dd></div>`).join('')}</dl>${button('new','开始自己的采集','camera','primary full')}</aside></div>`);
   if (modelUrl) loadViewer(modelUrl, selected.upAxis, selected.initialView);
+}
+function renderFurnishing() {
+  shell(`${heading('本地试摆工作空间', '把家具放进空间看看', '选择一个房间成果，调整家具位置，保存自己的摆放布局。')}<div id="furnishing-root"></div>`);
+  const generation = renderGeneration, abort = new AbortController();
+  viewerAbort = abort;
+  import('./furnishing.js').then(({ mountFurnishing }) => {
+    if (abort.signal.aborted || generation !== renderGeneration) return;
+    state.furnishing = mountFurnishing($('#furnishing-root'), { api, initialRoomId: state.furnishingRoomId, signal: abort.signal, onError: handleError,
+      onRoomChange: id => { state.furnishingRoomId = id; history.replaceState(null, '', `${location.pathname}${location.search}#/furnishing/${id}`); } });
+  }).catch(error => { if (!abort.signal.aborted) handleError(error); });
 }
 async function loadViewer(url, upAxis, initialView) {
   const generation = renderGeneration;
@@ -253,6 +273,7 @@ async function loadViewer(url, upAxis, initialView) {
 }
 async function navigate(view, draftId) {
   if (!state.user) return renderLogin();
+  if (!canLeaveFurnishing()) return;
   if (state.id.busy) throw new Error('证件资料正在处理，请稍候。');
   if (state.uploading) throw new Error('素材正在保存，请稍候。');
   await refreshAccount();
@@ -271,7 +292,8 @@ async function navigate(view, draftId) {
   if (view === 'home') state.drafts = (await api('/api/drafts')).drafts;
   if (view === 'sample') state.config = await api('/api/config');
   state.view = view; renderGeneration++;
-  ({ home: renderHome, account: renderAccount, capture: renderCapture, review: renderReview, result: renderResult, sample: renderSample })[view]();
+  if (view !== 'furnishing' && furnishingHash()) history.replaceState(null, '', location.pathname + location.search);
+  ({ home: renderHome, account: renderAccount, capture: renderCapture, review: renderReview, result: renderResult, sample: renderSample, furnishing: renderFurnishing })[view]();
   window.scrollTo(0,0);
 }
 async function updateVerification(work) {
@@ -320,6 +342,7 @@ async function action(name, el) {
   if (name === 'account') return navigate('account');
   if (name === 'home') return navigate('home');
   if (name === 'sample') return navigate('sample');
+  if (name === 'furnishing') { state.furnishingRoomId = el.dataset.room || null; return navigate('furnishing'); }
   if (name === 'edit-sample') {
     state.config = await api('/api/config');
     if (state.view !== 'sample') return;
@@ -367,6 +390,7 @@ async function action(name, el) {
   if (name === 'capture') { state.target = ''; return navigate('capture'); }
   if (name === 'review') return navigate('review', state.draft.id);
   if (name === 'logout') {
+    if (!canLeaveFurnishing()) return;
     if (state.camera) { await state.camera.close(); state.camera = null; }
     if (state.pending.length) throw new Error('有素材尚未保存，请先重试保存。');
     await api('/api/logout', { method: 'POST' });
@@ -442,7 +466,7 @@ document.addEventListener('submit', async event => {
       const result=await api('/api/login',{method:'POST',data}); state.csrf=result.csrf; state.user=result.user;
       if(state.pending.some(c=>c.owner!==state.user.id)){await api('/api/logout',{method:'POST'});state.user=null;throw new Error('未保存素材属于原账号，请使用原账号重新登录。');}
       state.config=await api('/api/config');
-      if(state.pending.length){await navigate('capture',state.pending[0].draftId); if(state.view==='capture') await uploadPending();} else await navigate('home');
+      if(state.pending.length){await navigate('capture',state.pending[0].draftId); if(state.view==='capture') await uploadPending();} else await initialView();
     } else if(form.id==='sample-settings-form') {
       const dialog = form.closest('dialog'), fields = form.querySelector('fieldset');
       const closeButtons = dialog.querySelectorAll('[data-action="close-dialog"]');
@@ -472,7 +496,7 @@ document.addEventListener('change', event => {
   if(el.id==='remote-toggle'){state.camera.remoteEnabled=el.checked;state.camera.guide();}
   if(el.id==='media-filter'){state.mediaFilter=el.value;renderReview();}
 });
-window.addEventListener('beforeunload', event => { if(state.uploading||state.pending.length||state.cameraState.recording||state.sampleImport?.busy){event.preventDefault();event.returnValue='';} });
+window.addEventListener('beforeunload', event => { if(state.uploading||state.pending.length||state.cameraState.recording||state.sampleImport?.busy||state.furnishing?.hasUnsavedChanges||state.furnishing?.busy){event.preventDefault();event.returnValue='';} });
 window.addEventListener('pagehide',()=>{state.camera?.stream?.getTracks().forEach(t=>t.stop());clearIdentity();});
-try { const session=await api('/api/session'); state.user=session.user;state.csrf=session.csrf;state.config=await api('/api/config'); await navigate('home'); }
+try { const session=await api('/api/session'); state.user=session.user;state.csrf=session.csrf;state.config=await api('/api/config'); await initialView(); }
 catch(error){renderLogin(error.status===401?'':error.message);}

@@ -11,7 +11,7 @@
     "start": "node --env-file-if-exists=.env server/start.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:e2e": "playwright test",
-    "check": "node --check server/app.mjs && node --check server/store.mjs && node --check server/providers.mjs && node --check server/samples.mjs && node --check server/sample-imports.mjs && node --check server/sample-settings.mjs && node --check src/app.js && node --check src/sample-import.js && node --check src/camera.js && node --check src/viewer.js && node --check src/viewer-controls.js && node --check src/viewer-navigation.js"
+    "check": "node --check server/app.mjs && node --check server/store.mjs && node --check server/providers.mjs && node --check server/samples.mjs && node --check server/sample-imports.mjs && node --check server/sample-settings.mjs && node --check src/app.js && node --check src/sample-import.js && node --check src/camera.js && node --check src/viewer.js && node --check src/viewer-controls.js && node --check src/viewer-navigation.js && node --check server/furnishing.mjs && node --check src/furnishing.js && node --check src/furnishing-stage.js && node --check src/furnishing-geometry.js"
   },
   "dependencies": {
     "@manycore/aholo-sdk-asset": "1.2.0",

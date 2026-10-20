@@ -9,6 +9,7 @@ import { createProviders, reconstructionInput } from './providers.mjs';
 import { createSampleCatalog } from './samples.mjs';
 import { createSampleImports, MAX_MODEL_BYTES, parseProjectLink } from './sample-imports.mjs';
 import { createSampleSettings } from './sample-settings.mjs';
+import { createFurnishing } from './furnishing.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_MEDIA = 50 * 1024 * 1024;
@@ -79,6 +80,7 @@ export function createApp(options = {}) {
   const samples = createSampleCatalog(options.samplesRoot || join(root, 'outputs', 'aholo'), options.sampleDir);
   const imports = createSampleImports(store, { fetchImpl: options.importFetch });
   const sampleSettings = createSampleSettings(store);
+  const furnishing = createFurnishing(store, { samples, imports, sampleSettings, furnitureDir: options.furnitureDir });
   const ownSamples = userId => [...imports.list(userId), ...samples.list()];
   const dist = join(root, 'dist');
   const loginAttempts = new Map();
@@ -121,7 +123,7 @@ export function createApp(options = {}) {
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https:; frame-src https://studio.aholo3d.cn; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' blob: https:; frame-src https://studio.aholo3d.cn; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     const host = req.headers.host;
     const boundPort = server.address()?.port || options.port || 4317;
     const localHosts = [`localhost:${boundPort}`, `127.0.0.1:${boundPort}`, `[::1]:${boundPort}`];
@@ -160,6 +162,27 @@ export function createApp(options = {}) {
       if (path === '/api/session' && method === 'GET') return send(res, { user: store.publicUser(user), csrf: session.csrf });
       if (path === '/api/logout' && method === 'POST') { db.prepare('DELETE FROM sessions WHERE token=?').run(session.token); res.setHeader('Set-Cookie', cookie('', true)); return send(res, { ok: true }); }
       if (path === '/api/config' && method === 'GET') return send(res, { vision: providers.visionEnabled, reconstruction: providers.reconstructionEnabled, sample: Boolean(samples.asset('3FO4K4XNH9NX', 'spz')), samples: ownSamples(user.id).map(sample => sampleSettings.apply(sample, user.id)), maxModelBytes: MAX_MODEL_BYTES, maxMediaBytes: MAX_MEDIA, maxSeconds: 60 });
+      if (path === '/api/furnishing/rooms' && method === 'GET') return send(res, { rooms: furnishing.rooms(user.id), furniture: furnishing.furniture() });
+      const furnishingRoom = /^\/api\/furnishing\/rooms\/([a-zA-Z0-9-]+)(?:\/(layout))?$/.exec(path);
+      if (furnishingRoom) {
+        const [, id, action] = furnishingRoom;
+        if (!action && method === 'GET') {
+          const room = furnishing.room(user.id, id);
+          return send(res, { room, layout: furnishing.layout(user.id, room) });
+        }
+        if (action === 'layout' && method === 'PUT') {
+          const data = await jsonBody(req);
+          auth(req);
+          return send(res, furnishing.save(user.id, id, data));
+        }
+        fail(405, '不支持的布局操作。');
+      }
+      const furnishingAsset = /^\/api\/furnishing\/furniture\/([a-zA-Z0-9-]+)\/model\.glb$/.exec(path);
+      if (furnishingAsset && ['GET', 'HEAD'].includes(method)) {
+        const asset = furnishing.furnitureAsset(furnishingAsset[1]);
+        if (!asset) fail(404, '本机没有这件家具模型，请先准备演示资产。');
+        return streamFile(req, res, asset.path, 'model/gltf-binary');
+      }
       const sampleSettingsMatch = /^\/api\/samples\/([A-Z0-9]+)\/settings$/.exec(path);
       if (sampleSettingsMatch && method === 'PATCH') {
         const data = await jsonBody(req);
